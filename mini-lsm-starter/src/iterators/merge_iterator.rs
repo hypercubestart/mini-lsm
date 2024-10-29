@@ -2,9 +2,10 @@
 #![allow(dead_code)] // TODO(you): remove this lint after implementing this mod
 
 use std::cmp::{self};
+use std::collections::binary_heap::PeekMut;
 use std::collections::BinaryHeap;
 
-use anyhow::Result;
+use anyhow::{Ok, Result};
 
 use crate::key::KeySlice;
 
@@ -45,7 +46,20 @@ pub struct MergeIterator<I: StorageIterator> {
 
 impl<I: StorageIterator> MergeIterator<I> {
     pub fn create(iters: Vec<Box<I>>) -> Self {
-        unimplemented!()
+        let mut heap = BinaryHeap::from_iter(
+            iters
+                .into_iter()
+                .enumerate()
+                .filter(|val| val.1.is_valid())
+                .map(|val| HeapWrapper(val.0, val.1)),
+        );
+
+        let current = heap.pop();
+
+        MergeIterator {
+            iters: heap,
+            current: current,
+        }
     }
 }
 
@@ -55,18 +69,55 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
     type KeyType<'a> = KeySlice<'a>;
 
     fn key(&self) -> KeySlice {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.key()
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        self.current.as_ref().unwrap().1.value()
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        self.current.is_some()
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        // call next() on entries with the same key
+        let cur = self.current.as_ref().unwrap();
+
+        loop {
+            let mut cont = false;
+            if let Some(mut inner) = self.iters.peek_mut() {
+                if inner.1.key() == cur.1.key() {
+                    cont = true;
+                    if let Err(e) = inner.1.next() {
+                        PeekMut::pop(inner);
+                        break Err(e);
+                    }
+
+                    if !inner.1.is_valid() {
+                        PeekMut::pop(inner);
+                    }
+                }
+            };
+
+            if !cont {
+                break (Ok(()));
+            }
+        }?;
+
+        let mut next: Option<HeapWrapper<I>> = None;
+
+        std::mem::swap(&mut self.current, &mut next);
+        if let Some(mut next) = next {
+            next.1.next()?;
+
+            if next.1.is_valid() {
+                self.iters.push(next);
+            }
+        };
+
+        self.current = self.iters.pop();
+
+        Ok(())
     }
 }

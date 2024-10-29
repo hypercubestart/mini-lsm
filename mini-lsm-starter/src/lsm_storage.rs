@@ -15,9 +15,10 @@ use crate::compact::{
     CompactionController, CompactionOptions, LeveledCompactionController, LeveledCompactionOptions,
     SimpleLeveledCompactionController, SimpleLeveledCompactionOptions, TieredCompactionController,
 };
-use crate::lsm_iterator::{FusedIterator, LsmIterator};
+use crate::iterators::merge_iterator::MergeIterator;
+use crate::lsm_iterator::{self, FusedIterator, LsmIterator};
 use crate::manifest::Manifest;
-use crate::mem_table::MemTable;
+use crate::mem_table::{MemTable, MemTableIterator};
 use crate::mvcc::LsmMvccInner;
 use crate::table::SsTable;
 
@@ -391,9 +392,23 @@ impl LsmStorageInner {
     /// Create an iterator over a range of keys.
     pub fn scan(
         &self,
-        _lower: Bound<&[u8]>,
-        _upper: Bound<&[u8]>,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
     ) -> Result<FusedIterator<LsmIterator>> {
-        unimplemented!()
+        let snapshot = {
+            let guard = self.state.read();
+            guard.clone()
+        };
+
+        let mut iters = Vec::with_capacity(snapshot.imm_memtables.len() + 1);
+        iters.push(Box::new(snapshot.memtable.scan(lower, upper)));
+        for t in snapshot.imm_memtables.iter() {
+            iters.push(Box::new(t.scan(lower, upper)));
+        }
+
+        let lsm_iterator = LsmIterator::new(MergeIterator::create(iters))?;
+        let fused_iterator = FusedIterator::new(lsm_iterator);
+
+        Ok(fused_iterator)
     }
 }
