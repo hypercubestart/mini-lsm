@@ -42,7 +42,7 @@ impl MemTable {
         MemTable {
             map: Arc::new(SkipMap::new()),
             wal: None,
-            id: id,
+            id,
             approximate_size: Arc::new(AtomicUsize::new(0usize)),
         }
     }
@@ -88,10 +88,7 @@ impl MemTable {
 
     /// Get a value by key.
     pub fn get(&self, key: &[u8]) -> Option<Bytes> {
-        match self.map.get(key) {
-            None => None,
-            Some(entry) => Some(entry.value().clone()),
-        }
+        self.map.get(key).map(|entry| entry.value().clone())
     }
 
     /// Put a key-value pair into the mem-table.

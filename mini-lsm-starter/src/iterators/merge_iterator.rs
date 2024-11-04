@@ -58,7 +58,7 @@ impl<I: StorageIterator> MergeIterator<I> {
 
         MergeIterator {
             iters: heap,
-            current: current,
+            current,
         }
     }
 }
