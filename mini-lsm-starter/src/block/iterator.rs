@@ -40,7 +40,7 @@ impl BlockIterator {
             self.key = KeyVec::new();
         } else {
             // start ... key_start .... value_length_start ...value_start ... end
-            let start = self.block.offsets[self.idx].to_usize();
+            let start = self.block.offsets[self.idx] as usize;
             let size_u16 = std::mem::size_of::<u16>();
             let key_start = start + size_u16;
             let key_length =
@@ -92,7 +92,7 @@ impl BlockIterator {
     /// Returns true if the iterator is valid.
     /// Note: You may want to make use of `key`
     pub fn is_valid(&self) -> bool {
-        self.key.is_empty()
+        !self.key.is_empty()
     }
 
     /// Seeks to the first key in the block.
