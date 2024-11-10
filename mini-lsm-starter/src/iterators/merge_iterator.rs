@@ -80,6 +80,10 @@ impl<I: 'static + for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>> StorageIt
         self.current.is_some()
     }
 
+    fn num_active_iterators(&self) -> usize {
+        self.iters.len() + if self.current.is_some() { 1 } else { 0 }
+    }
+
     fn next(&mut self) -> Result<()> {
         // call next() on entries with the same key
         let cur = self.current.as_ref().unwrap();
