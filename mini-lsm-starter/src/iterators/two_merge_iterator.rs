@@ -7,10 +7,16 @@ use super::StorageIterator;
 
 /// Merges two iterators of different types into one. If the two iterators have the same key, only
 /// produce the key once and prefer the entry from A.
+
+enum WhichIterator {
+    First,
+    Second,
+    Invalid,
+}
 pub struct TwoMergeIterator<A: StorageIterator, B: StorageIterator> {
     a: A,
     b: B,
-    // Add fields as need
+    cur: WhichIterator,
 }
 
 impl<
@@ -18,8 +24,27 @@ impl<
         B: 'static + for<'a> StorageIterator<KeyType<'a> = A::KeyType<'a>>,
     > TwoMergeIterator<A, B>
 {
+    fn which_iterator(a: &A, b: &B) -> WhichIterator {
+        if a.is_valid() && b.is_valid() {
+            if a.key() <= b.key() {
+                WhichIterator::First
+            } else {
+                WhichIterator::Second
+            }
+        } else if a.is_valid() {
+            WhichIterator::First
+        } else if b.is_valid() {
+            WhichIterator::Second
+        } else {
+            WhichIterator::Invalid
+        }
+    }
+
     pub fn create(a: A, b: B) -> Result<Self> {
-        unimplemented!()
+        let cur = TwoMergeIterator::which_iterator(&a, &b);
+
+        let res = Self { a, b, cur };
+        Ok(res)
     }
 }
 
@@ -31,18 +56,41 @@ impl<
     type KeyType<'a> = A::KeyType<'a>;
 
     fn key(&self) -> Self::KeyType<'_> {
-        unimplemented!()
+        match self.cur {
+            WhichIterator::First => self.a.key(),
+            WhichIterator::Second => self.b.key(),
+            WhichIterator::Invalid => panic!("key() called on invalid iterator"),
+        }
     }
 
     fn value(&self) -> &[u8] {
-        unimplemented!()
+        match self.cur {
+            WhichIterator::First => self.a.value(),
+            WhichIterator::Second => self.b.value(),
+            WhichIterator::Invalid => panic!("key() called on invalid iterator"),
+        }
     }
 
     fn is_valid(&self) -> bool {
-        unimplemented!()
+        !matches!(self.cur, WhichIterator::Invalid)
     }
 
     fn next(&mut self) -> Result<()> {
-        unimplemented!()
+        match self.cur {
+            WhichIterator::First => {
+                while self.b.is_valid() && self.b.key() == self.a.key() {
+                    self.b.next()?;
+                }
+                self.a.next()?;
+            }
+            WhichIterator::Second => {
+                self.b.next()?;
+            }
+            WhichIterator::Invalid => (),
+        }
+
+        let cur = TwoMergeIterator::which_iterator(&self.a, &self.b);
+        self.cur = cur;
+        Ok(())
     }
 }
