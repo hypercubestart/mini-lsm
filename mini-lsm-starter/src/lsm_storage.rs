@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Bytes;
+use farmhash::fingerprint32;
 use parking_lot::{Mutex, MutexGuard, RwLock};
 
 use crate::block::Block;
@@ -56,6 +57,19 @@ pub(crate) fn range_overlap(
 
     let disjoint = below_lower || above_upper;
     !disjoint
+}
+
+pub(crate) fn key_maybe_within(sstable: &Arc<SsTable>, key: &[u8]) -> bool {
+    let within_bounds = key >= sstable.first_key().raw_ref() && key <= sstable.last_key().raw_ref();
+    let h = fingerprint32(key);
+
+    let in_bloom_filter = sstable
+        .bloom
+        .as_ref()
+        .map(|bloom| bloom.may_contain(h))
+        .unwrap_or(true);
+
+    within_bounds && in_bloom_filter
 }
 
 /// Represents the state of the storage engine.
@@ -351,14 +365,17 @@ impl LsmStorageInner {
                 None => {
                     for sstable in &snapshot.l0_sstables {
                         let ss_table = snapshot.sstables.get(sstable).unwrap().clone();
-                        let ss_table_iter = SsTableIterator::create_and_seek_to_key(
-                            ss_table,
-                            KeySlice::from_slice(key),
-                        )?;
 
-                        if ss_table_iter.is_valid() && ss_table_iter.key().raw_ref() == key {
-                            let val = ss_table_iter.value();
-                            return Ok(handle_tombstones(Bytes::copy_from_slice(val)));
+                        if key_maybe_within(&ss_table, key) {
+                            let ss_table_iter = SsTableIterator::create_and_seek_to_key(
+                                ss_table,
+                                KeySlice::from_slice(key),
+                            )?;
+
+                            if ss_table_iter.is_valid() && ss_table_iter.key().raw_ref() == key {
+                                let val = ss_table_iter.value();
+                                return Ok(handle_tombstones(Bytes::copy_from_slice(val)));
+                            }
                         }
                     }
 

@@ -23,14 +23,22 @@ pub struct BlockIterator {
     first_key: KeyVec,
 }
 
+const SIZE_U16: usize = std::mem::size_of::<u16>();
+
 impl BlockIterator {
     fn new(block: Arc<Block>) -> Self {
+        let first_key = {
+            let first_key_length =
+                u16::from_be_bytes(block.data[0..SIZE_U16].try_into().unwrap()) as usize;
+            KeySlice::from_slice(&block.data[SIZE_U16..SIZE_U16 + first_key_length]).to_key_vec()
+        };
+
         Self {
             block,
             key: KeyVec::new(),
             value_range: (0, 0),
             idx: 0,
-            first_key: KeyVec::new(),
+            first_key,
         }
     }
 
@@ -41,13 +49,35 @@ impl BlockIterator {
         } else {
             // start ... key_start .... value_length_start ...value_start ... end
             let start = self.block.offsets[self.idx] as usize;
-            let size_u16 = std::mem::size_of::<u16>();
-            let key_start = start + size_u16;
-            let key_length =
-                u16::from_be_bytes(self.block.data[start..key_start].try_into().unwrap())
-                    .to_usize();
-            let value_length_start = key_start + key_length;
-            let value_start = value_length_start + size_u16;
+
+            let (key, key_end) = {
+                if idx == 0 {
+                    (self.first_key.clone(), SIZE_U16 + self.first_key.len())
+                } else {
+                    let key_overlap_len = u16::from_be_bytes(
+                        self.block.data[start..start + SIZE_U16].try_into().unwrap(),
+                    ) as usize;
+
+                    let start_key = start + SIZE_U16 + SIZE_U16;
+                    let rest_key_len = u16::from_be_bytes(
+                        self.block.data[start + SIZE_U16..start_key]
+                            .try_into()
+                            .unwrap(),
+                    ) as usize;
+
+                    let suffix_key = &self.block.data[start_key..start_key + rest_key_len];
+
+                    let mut key =
+                        KeySlice::from_slice(&self.first_key.raw_ref()[..key_overlap_len])
+                            .to_key_vec();
+                    key.append(suffix_key);
+
+                    (key, start_key + rest_key_len)
+                }
+            };
+
+            let value_length_start = key_end;
+            let value_start = value_length_start + SIZE_U16;
             let value_length = u16::from_be_bytes(
                 self.block.data[value_length_start..value_start]
                     .try_into()
@@ -56,8 +86,7 @@ impl BlockIterator {
             .to_usize();
             let end = value_start + value_length;
 
-            self.key =
-                KeySlice::from_slice(&self.block.data[key_start..value_length_start]).to_key_vec();
+            self.key = key;
             self.value_range = (value_start, end);
         }
     }

@@ -130,7 +130,17 @@ impl SsTable {
     /// Open SSTable from a file.
     pub fn open(id: usize, block_cache: Option<Arc<BlockCache>>, file: FileObject) -> Result<Self> {
         let size = file.size();
-        let meta_block_end = size - (U32_SIZE as u64);
+        let bloom_block_end = size - (U32_SIZE as u64);
+        let bloom_offset = {
+            let data = file.read(bloom_block_end, U32_SIZE as u64)?;
+            (&data[..]).get_u32() as u64
+        };
+        let bloom = {
+            let data = file.read(bloom_offset, bloom_block_end - bloom_offset)?;
+            Bloom::decode(&data)?
+        };
+
+        let meta_block_end = bloom_offset - (U32_SIZE as u64);
         let block_meta_offset = {
             let data = file.read(meta_block_end, U32_SIZE as u64)?;
             (&data[..]).get_u32() as u64
@@ -152,7 +162,7 @@ impl SsTable {
             block_cache,
             first_key,
             last_key,
-            bloom: None,
+            bloom: Some(bloom),
             max_ts: 0,
         };
 

@@ -19,6 +19,10 @@ pub struct BlockBuilder {
     first_key: KeyVec,
 }
 
+pub fn prefix(xs: &[u8], ys: &[u8]) -> usize {
+    xs.iter().zip(ys).take_while(|(x, y)| x == y).count()
+}
+
 impl BlockBuilder {
     /// Creates a new block builder.
     pub fn new(block_size: usize) -> Self {
@@ -40,14 +44,22 @@ impl BlockBuilder {
         let new_size = cur_size + byte_size_increase;
 
         if self.is_empty() || new_size <= self.block_size {
+            let offset = self.data.len();
             if self.offsets.is_empty() {
+                // first key encode as key_len (u16), key_data
                 self.first_key = key.to_key_vec();
-            };
+                self.data.put_u16(key.len() as u16);
+                self.data.put(key.raw_ref());
+            } else {
+                // key_overlap_len (u16) | rest_key_len (u16) | key (rest_key_len)
+                let overlap = prefix(self.first_key.raw_ref(), key.raw_ref());
+                self.data.put_u16(overlap as u16);
+                let rest_key_len = key.len() as u16 - overlap as u16;
+                self.data.put_u16(rest_key_len);
+                self.data.put(&key.raw_ref()[overlap..]);
+            }
 
-            self.offsets.push(u16::try_from(self.data.len()).unwrap());
-
-            self.data.put_u16(key.len() as u16);
-            self.data.put(key.raw_ref());
+            self.offsets.push(offset as u16);
 
             self.data.put_u16(value.len() as u16);
             self.data.put(value);
