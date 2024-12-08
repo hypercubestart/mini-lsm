@@ -33,9 +33,36 @@ impl SimpleLeveledCompactionController {
     /// Returns `None` if no compaction needs to be scheduled. The order of SSTs in the compaction task id vector matters.
     pub fn generate_compaction_task(
         &self,
-        _snapshot: &LsmStorageState,
+        snapshot: &LsmStorageState,
     ) -> Option<SimpleLeveledCompactionTask> {
-        unimplemented!()
+        if snapshot.l0_sstables.len() >= self.options.level0_file_num_compaction_trigger {
+            return Some(SimpleLeveledCompactionTask {
+                upper_level: None,
+                upper_level_sst_ids: snapshot.l0_sstables.clone(),
+                lower_level: 1,
+                lower_level_sst_ids: snapshot.levels[0].1.clone(),
+                is_lower_level_bottom_level: self.options.max_levels == 1,
+            });
+        }
+
+        for i in 0..snapshot.levels.len() - 1 {
+            if snapshot.levels[i].1.is_empty() {
+                continue;
+            }
+
+            let ratio = 100 * snapshot.levels[i + 1].1.len() / snapshot.levels[i].1.len();
+            if ratio < self.options.size_ratio_percent {
+                return Some(SimpleLeveledCompactionTask {
+                    upper_level: Some(i + 1),
+                    upper_level_sst_ids: snapshot.levels[i].1.clone(),
+                    lower_level: i + 2,
+                    lower_level_sst_ids: snapshot.levels[i + 1].1.clone(),
+                    is_lower_level_bottom_level: self.options.max_levels == i + 2,
+                });
+            }
+        }
+
+        None
     }
 
     /// Apply the compaction result.
@@ -47,10 +74,66 @@ impl SimpleLeveledCompactionController {
     /// in your implementation.
     pub fn apply_compaction_result(
         &self,
-        _snapshot: &LsmStorageState,
-        _task: &SimpleLeveledCompactionTask,
-        _output: &[usize],
+        snapshot: &LsmStorageState,
+        task: &SimpleLeveledCompactionTask,
+        output: &[usize],
     ) -> (LsmStorageState, Vec<usize>) {
-        unimplemented!()
+        let mut snapshot = snapshot.clone();
+        let files_to_remove = {
+            task.upper_level_sst_ids
+                .iter()
+                .chain(task.lower_level_sst_ids.iter())
+                .copied()
+                .collect::<Vec<_>>()
+        };
+
+        match task.upper_level {
+            None => {
+                let l0_level = snapshot
+                    .l0_sstables
+                    .iter()
+                    .copied()
+                    .filter(|x| !task.upper_level_sst_ids.contains(x))
+                    .collect::<Vec<_>>();
+                let mut l1_level = snapshot.levels[0]
+                    .1
+                    .iter()
+                    .copied()
+                    .filter(|x| !task.lower_level_sst_ids.contains(x))
+                    .collect::<Vec<_>>();
+
+                assert!(l1_level.is_empty());
+                l1_level.extend_from_slice(output);
+
+                snapshot.l0_sstables = l0_level;
+                snapshot.levels[0].1.clone_from(&l1_level);
+            }
+            Some(level) => {
+                let idx = level - 1;
+                let lower_idx = level;
+
+                let upper_level = snapshot.levels[idx]
+                    .1
+                    .iter()
+                    .copied()
+                    .filter(|x| !task.upper_level_sst_ids.contains(x))
+                    .collect::<Vec<_>>();
+                let mut lower_level = snapshot.levels[lower_idx]
+                    .1
+                    .iter()
+                    .copied()
+                    .filter(|x| !task.lower_level_sst_ids.contains(x))
+                    .collect::<Vec<_>>();
+
+                assert!(upper_level.is_empty());
+                assert!(lower_level.is_empty());
+                lower_level.extend_from_slice(output);
+
+                snapshot.levels[idx].1.clone_from(&upper_level);
+                snapshot.levels[lower_idx].1.clone_from(&lower_level);
+            }
+        }
+
+        (snapshot, files_to_remove)
     }
 }

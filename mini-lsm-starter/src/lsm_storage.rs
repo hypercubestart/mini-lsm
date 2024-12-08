@@ -357,55 +357,49 @@ impl LsmStorageInner {
             guard.clone()
         };
         if let Some(res) = read_memtable(&snapshot.memtable) {
-            Ok(handle_tombstones(res))
-        } else {
-            let res = snapshot.imm_memtables.iter().find_map(read_memtable);
+            return Ok(handle_tombstones(res));
+        }
+        if let Some(res) = snapshot.imm_memtables.iter().find_map(read_memtable) {
+            return Ok(handle_tombstones(res));
+        }
 
-            match res {
-                Some(res) => Ok(handle_tombstones(res)),
-                None => {
-                    for sstable in &snapshot.l0_sstables {
-                        let ss_table = snapshot.sstables.get(sstable).unwrap().clone();
+        for sstable in &snapshot.l0_sstables {
+            let ss_table = snapshot.sstables.get(sstable).unwrap().clone();
 
-                        if key_maybe_within(&ss_table, key) {
-                            let ss_table_iter = SsTableIterator::create_and_seek_to_key(
-                                ss_table,
-                                KeySlice::from_slice(key),
-                            )?;
+            if key_maybe_within(&ss_table, key) {
+                let ss_table_iter =
+                    SsTableIterator::create_and_seek_to_key(ss_table, KeySlice::from_slice(key))?;
 
-                            if ss_table_iter.is_valid() && ss_table_iter.key().raw_ref() == key {
-                                let val = ss_table_iter.value();
-                                return Ok(handle_tombstones(Bytes::copy_from_slice(val)));
-                            }
-                        }
-                    }
-
-                    let mut level_iters = Vec::with_capacity(snapshot.levels.len());
-                    for (_, level_sst_ids) in &snapshot.levels {
-                        let mut level_ssts = Vec::new();
-                        for sst in level_sst_ids {
-                            let table = snapshot.sstables.get(sst).unwrap().clone();
-                            if key_maybe_within(&table, key) {
-                                level_ssts.push(table);
-                            }
-                        }
-
-                        level_iters.push(Box::new(SstConcatIterator::create_and_seek_to_key(
-                            level_ssts,
-                            KeySlice::from_slice(key),
-                        )?));
-                    }
-
-                    let iter = MergeIterator::create(level_iters);
-
-                    if iter.is_valid() && iter.key().raw_ref() == key {
-                        return Ok(handle_tombstones(Bytes::copy_from_slice(iter.value())));
-                    }
-
-                    Ok(None)
+                if ss_table_iter.is_valid() && ss_table_iter.key().raw_ref() == key {
+                    let val = ss_table_iter.value();
+                    return Ok(handle_tombstones(Bytes::copy_from_slice(val)));
                 }
             }
         }
+
+        let mut level_iters = Vec::with_capacity(snapshot.levels.len());
+        for (_, level_sst_ids) in &snapshot.levels {
+            let mut level_ssts = Vec::new();
+            for sst in level_sst_ids {
+                let table = snapshot.sstables.get(sst).unwrap().clone();
+                if key_maybe_within(&table, key) {
+                    level_ssts.push(table);
+                }
+            }
+
+            level_iters.push(Box::new(SstConcatIterator::create_and_seek_to_key(
+                level_ssts,
+                KeySlice::from_slice(key),
+            )?));
+        }
+
+        let iter = MergeIterator::create(level_iters);
+
+        if iter.is_valid() && iter.key().raw_ref() == key {
+            return Ok(handle_tombstones(Bytes::copy_from_slice(iter.value())));
+        }
+
+        Ok(None)
     }
 
     /// Write a batch of data into the storage. Implement in week 2 day 7.
@@ -568,39 +562,48 @@ impl LsmStorageInner {
             }
             MergeIterator::create(iters)
         };
-        let l1_iterator = {
-            let mut tables = Vec::new();
+        let levels_iterator = {
+            let mut iters = Vec::new();
 
-            for l1_sstable in &snapshot.levels[0].1 {
-                let ss_table = snapshot.sstables.get(l1_sstable).unwrap().clone();
-                if range_overlap(lower, upper, ss_table.first_key(), ss_table.last_key()) {
-                    tables.push(ss_table);
-                }
-            }
+            for (_level, sstables) in &snapshot.levels {
+                let mut tables = Vec::new();
 
-            match lower {
-                Bound::Included(lower) => {
-                    SstConcatIterator::create_and_seek_to_key(tables, KeySlice::from_slice(lower))?
+                for sst_id in sstables {
+                    let ss_table = snapshot.sstables.get(sst_id).unwrap().clone();
+                    if range_overlap(lower, upper, ss_table.first_key(), ss_table.last_key()) {
+                        tables.push(ss_table);
+                    }
                 }
-                Bound::Excluded(lower) => {
-                    let mut iter = SstConcatIterator::create_and_seek_to_key(
+
+                let iter = match lower {
+                    Bound::Included(lower) => SstConcatIterator::create_and_seek_to_key(
                         tables,
                         KeySlice::from_slice(lower),
-                    )?;
+                    )?,
+                    Bound::Excluded(lower) => {
+                        let mut iter = SstConcatIterator::create_and_seek_to_key(
+                            tables,
+                            KeySlice::from_slice(lower),
+                        )?;
 
-                    if iter.is_valid() && iter.key().raw_ref() == lower {
-                        iter.next()?;
-                    };
-                    iter
-                }
-                Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(tables)?,
+                        if iter.is_valid() && iter.key().raw_ref() == lower {
+                            iter.next()?;
+                        };
+                        iter
+                    }
+                    Bound::Unbounded => SstConcatIterator::create_and_seek_to_first(tables)?,
+                };
+
+                iters.push(Box::new(iter));
             }
+
+            MergeIterator::create(iters)
         };
 
         let lsm_iterator = LsmIterator::new(
             TwoMergeIterator::create(
                 TwoMergeIterator::create(mem_table_iterator, l0_iterator)?,
-                l1_iterator,
+                levels_iterator,
             )?,
             map_bound(upper),
         )?;

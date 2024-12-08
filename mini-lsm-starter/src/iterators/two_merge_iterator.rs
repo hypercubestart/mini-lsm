@@ -67,7 +67,7 @@ impl<
         match self.cur {
             WhichIterator::First => self.a.value(),
             WhichIterator::Second => self.b.value(),
-            WhichIterator::Invalid => panic!("key() called on invalid iterator"),
+            WhichIterator::Invalid => panic!("valie() called on invalid iterator"),
         }
     }
 

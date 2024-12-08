@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Error, Result};
+use anyhow::Result;
 
 use super::StorageIterator;
 use crate::{
@@ -17,9 +17,21 @@ pub struct SstConcatIterator {
 }
 
 impl SstConcatIterator {
+    fn check_sst_valid(sstables: &[Arc<SsTable>]) {
+        for sst in sstables {
+            assert!(sst.first_key() <= sst.last_key());
+        }
+        if !sstables.is_empty() {
+            for i in 0..(sstables.len() - 1) {
+                assert!(sstables[i].last_key() < sstables[i + 1].first_key());
+            }
+        }
+    }
+
     fn next_sst(&mut self) -> Result<()> {
         if self.next_sst_idx >= self.sstables.len() {
-            Result::Err(Error::msg("iterator is not valid"))
+            self.current = None;
+            Ok(())
         } else {
             let new_iter = SsTableIterator::create_and_seek_to_first(
                 self.sstables[self.next_sst_idx].clone(),
@@ -32,7 +44,8 @@ impl SstConcatIterator {
 
     fn _next(&mut self) -> Result<()> {
         if let Some(iter) = &mut self.current {
-            if iter.next().is_err() {
+            iter.next()?;
+            if !iter.is_valid() {
                 self.next_sst()
             } else {
                 Ok(())
@@ -43,6 +56,7 @@ impl SstConcatIterator {
     }
 
     pub fn create_and_seek_to_first(sstables: Vec<Arc<SsTable>>) -> Result<Self> {
+        Self::check_sst_valid(&sstables);
         let mut ret = Self {
             next_sst_idx: 0,
             current: None,
@@ -55,6 +69,7 @@ impl SstConcatIterator {
     }
 
     pub fn create_and_seek_to_key(sstables: Vec<Arc<SsTable>>, key: KeySlice) -> Result<Self> {
+        Self::check_sst_valid(&sstables);
         for (idx, sstable) in sstables.iter().enumerate() {
             if sstable.last_key().as_key_slice() >= key {
                 let iter = SsTableIterator::create_and_seek_to_key(sstable.clone(), key)?;
