@@ -115,6 +115,7 @@ pub enum CompactionOptions {
 impl LsmStorageInner {
     fn generate_sst_from_iter(
         &self,
+        compact_to_bottom_level: bool,
         mut iter: impl for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
     ) -> Result<Vec<Arc<SsTable>>> {
         let mut builder = None;
@@ -128,7 +129,11 @@ impl LsmStorageInner {
             let value = iter.value();
             let b = builder.as_mut().unwrap();
 
-            if !value.is_empty() {
+            if compact_to_bottom_level {
+                if !value.is_empty() {
+                    b.add(key, value);
+                }
+            } else {
                 b.add(key, value);
             }
 
@@ -185,12 +190,13 @@ impl LsmStorageInner {
                 let l1_iter = SstConcatIterator::create_and_seek_to_first(l1_sstables)?;
 
                 let iter = TwoMergeIterator::create(l0_iter, l1_iter)?;
-                self.generate_sst_from_iter(iter)
+                self.generate_sst_from_iter(true, iter)
             }
             CompactionTask::Simple(SimpleLeveledCompactionTask {
                 upper_level,
                 upper_level_sst_ids,
                 lower_level_sst_ids,
+                is_lower_level_bottom_level,
                 ..
             }) => match upper_level {
                 None => {
@@ -211,7 +217,7 @@ impl LsmStorageInner {
                     };
 
                     let iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.generate_sst_from_iter(iter)
+                    self.generate_sst_from_iter(is_lower_level_bottom_level.clone(), iter)
                 }
                 Some(_) => {
                     let upper_iter = {
@@ -230,7 +236,7 @@ impl LsmStorageInner {
                     };
 
                     let iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.generate_sst_from_iter(iter)
+                    self.generate_sst_from_iter(is_lower_level_bottom_level.clone(), iter)
                 }
             },
             _ => unimplemented!(),
