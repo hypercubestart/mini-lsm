@@ -217,7 +217,7 @@ impl LsmStorageInner {
                     };
 
                     let iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.generate_sst_from_iter(is_lower_level_bottom_level.clone(), iter)
+                    self.generate_sst_from_iter(*is_lower_level_bottom_level, iter)
                 }
                 Some(_) => {
                     let upper_iter = {
@@ -236,9 +236,31 @@ impl LsmStorageInner {
                     };
 
                     let iter = TwoMergeIterator::create(upper_iter, lower_iter)?;
-                    self.generate_sst_from_iter(is_lower_level_bottom_level.clone(), iter)
+                    self.generate_sst_from_iter(*is_lower_level_bottom_level, iter)
                 }
             },
+            CompactionTask::Tiered(TieredCompactionTask {
+                tiers,
+                bottom_tier_included,
+            }) => {
+                let mut iters = Vec::new();
+
+                for tier in tiers {
+                    let sstables = tier
+                        .1
+                        .iter()
+                        .map(|x| snapshot.sstables.get(x).unwrap().clone())
+                        .collect::<Vec<_>>();
+                    iters.push(Box::new(SstConcatIterator::create_and_seek_to_first(
+                        sstables,
+                    )?));
+                }
+
+                let iter = MergeIterator::create(iters);
+
+                self.generate_sst_from_iter(*bottom_tier_included, iter)
+            }
+
             _ => unimplemented!(),
         }
     }
