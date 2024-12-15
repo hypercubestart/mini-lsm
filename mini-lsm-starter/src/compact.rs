@@ -198,6 +198,13 @@ impl LsmStorageInner {
                 lower_level_sst_ids,
                 is_lower_level_bottom_level,
                 ..
+            })
+            | CompactionTask::Leveled(LeveledCompactionTask {
+                upper_level,
+                upper_level_sst_ids,
+                lower_level_sst_ids,
+                is_lower_level_bottom_level,
+                ..
             }) => match upper_level {
                 None => {
                     let mut l0_iters = Vec::new();
@@ -260,8 +267,6 @@ impl LsmStorageInner {
 
                 self.generate_sst_from_iter(*bottom_tier_included, iter)
             }
-
-            _ => unimplemented!(),
         }
     }
 
@@ -320,11 +325,7 @@ impl LsmStorageInner {
 
                 let files_to_delete = {
                     let _state_lock = self.state_lock.lock();
-                    let snapshot = self.state.read().as_ref().clone();
-
-                    let (mut snapshot, files_to_delete) = self
-                        .compaction_controller
-                        .apply_compaction_result(&snapshot, &task, &output_ssts, false);
+                    let mut snapshot = self.state.read().as_ref().clone();
 
                     for sst_to_add in &output {
                         let res = snapshot
@@ -332,6 +333,10 @@ impl LsmStorageInner {
                             .insert(sst_to_add.sst_id(), sst_to_add.clone());
                         assert!(res.is_none())
                     }
+
+                    let (mut snapshot, files_to_delete) = self
+                        .compaction_controller
+                        .apply_compaction_result(&snapshot, &task, &output_ssts, false);
 
                     for sst_id_to_delete in &files_to_delete {
                         let res = snapshot.sstables.remove(sst_id_to_delete);
