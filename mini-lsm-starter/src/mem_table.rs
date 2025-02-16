@@ -60,8 +60,8 @@ impl MemTable {
 
     /// Create a memtable from WAL
     pub fn recover_from_wal(id: usize, path: impl AsRef<Path>) -> Result<Self> {
-        let skiplist = SkipMap::new();
-        let wal = Wal::recover(path, &skiplist)?;
+        let mut skiplist = SkipMap::new();
+        let wal = Wal::recover(path, &mut skiplist)?;
         Ok(MemTable {
             map: Arc::new(skiplist),
             wal: Some(wal),
@@ -97,11 +97,15 @@ impl MemTable {
     /// In week 2, day 6, also flush the data to WAL.
     /// In week 3, day 5, modify the function to use the batch API.
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
-        let key = Bytes::copy_from_slice(key);
-        let value = Bytes::copy_from_slice(value);
+        let key_bytes = Bytes::copy_from_slice(key);
+        let value_bytes = Bytes::copy_from_slice(value);
         self.approximate_size
             .fetch_add(key.len() + value.len(), std::sync::atomic::Ordering::SeqCst);
-        self.map.insert(key, value);
+        self.map.insert(key_bytes, value_bytes);
+
+        if let Some(wal) = &self.wal {
+            wal.put(key, value)?;
+        }
         Ok(())
     }
 

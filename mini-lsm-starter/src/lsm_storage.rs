@@ -240,6 +240,9 @@ impl MiniLsm {
                 self.inner.force_flush_next_imm_memtable()?;
             }
             self.inner.sync_dir()?;
+        } else {
+            self.inner.sync()?;
+            self.inner.sync_dir()?;
         }
 
         Ok(())
@@ -333,6 +336,7 @@ impl LsmStorageInner {
         let manifest;
         let mut next_sst_id = 1;
         let block_cache = Arc::new(BlockCache::new(1024));
+        let mut memtables = BTreeSet::new();
 
         let compaction_controller = match &options.compaction_options {
             CompactionOptions::Leveled(options) => {
@@ -348,16 +352,25 @@ impl LsmStorageInner {
         };
 
         if !manifest_path.exists() {
+            if options.enable_wal {
+                let id = state.memtable.id();
+                state.memtable = Arc::new(MemTable::create_with_wal(
+                    id,
+                    Self::path_of_wal_static(path, id),
+                )?);
+            }
+
             manifest = Manifest::create(manifest_path)?;
             manifest.add_record_when_init(ManifestRecord::NewMemtable(state.memtable.id()))?;
         } else {
             let records;
             (manifest, records) = Manifest::recover(manifest_path)?;
-            let mut memtables = BTreeSet::new();
+
             for record in records {
                 match record {
                     ManifestRecord::Flush(sst_id) => {
-                        memtables.remove(&sst_id);
+                        let removed = memtables.remove(&sst_id);
+                        assert!(removed, "missing NewMemTable?");
                         if compaction_controller.flush_to_l0() {
                             state.l0_sstables.insert(0, sst_id);
                         } else {
@@ -377,45 +390,61 @@ impl LsmStorageInner {
                             true,
                         );
                         state = new_state;
+                        next_sst_id =
+                            next_sst_id.max(output_ssts.iter().max().copied().unwrap_or_default());
                     }
                 }
             }
-        }
 
-        // populate sstables map
-        for sst_id in state
-            .l0_sstables
-            .iter()
-            .chain(state.levels.iter().flat_map(|(_, files)| files))
-        {
-            let sst_id = *sst_id;
-            let sst = SsTable::open(
-                sst_id,
-                Some(block_cache.clone()),
-                FileObject::open(&Self::path_of_sst_static(path, sst_id))?,
-            )?;
-            state.sstables.insert(sst_id, Arc::new(sst));
-        }
-
-        // sort leveled compaction levels
-        if let CompactionController::Leveled(_) = compaction_controller {
-            let mut new_levels = Vec::new();
-
-            for level in state.levels {
-                let mut new_level = level.1.clone();
-                new_level.sort_by(|a, b| {
-                    state.sstables[a]
-                        .first_key()
-                        .cmp(state.sstables[b].first_key())
-                });
-
-                new_levels.push((level.0, new_level));
+            // populate sstables map
+            for sst_id in state
+                .l0_sstables
+                .iter()
+                .chain(state.levels.iter().flat_map(|(_, files)| files))
+            {
+                let sst_id = *sst_id;
+                let sst = SsTable::open(
+                    sst_id,
+                    Some(block_cache.clone()),
+                    FileObject::open(&Self::path_of_sst_static(path, sst_id))?,
+                )?;
+                state.sstables.insert(sst_id, Arc::new(sst));
             }
 
-            state.levels = new_levels;
-        }
+            // sort leveled compaction levels
+            if let CompactionController::Leveled(_) = compaction_controller {
+                for (_id, ssts) in &mut state.levels {
+                    ssts.sort_by(|a, b| {
+                        state.sstables[a]
+                            .first_key()
+                            .cmp(state.sstables[b].first_key())
+                    });
+                }
+            }
 
-        next_sst_id += 1;
+            next_sst_id += 1;
+
+            if options.enable_wal {
+                // recover memtables from WAL
+                for id in memtables {
+                    let path = Self::path_of_wal_static(path, id);
+                    let memtable = MemTable::recover_from_wal(id, path)?;
+                    if !memtable.is_empty() {
+                        state.imm_memtables.insert(0, Arc::new(memtable));
+                    }
+                }
+
+                state.memtable = Arc::new(MemTable::create_with_wal(
+                    next_sst_id,
+                    Self::path_of_wal_static(path, next_sst_id),
+                )?)
+            } else {
+                state.memtable = Arc::new(MemTable::create(next_sst_id));
+            }
+
+            manifest.add_record_when_init(ManifestRecord::NewMemtable(state.memtable.id()))?;
+            next_sst_id += 1;
+        }
 
         let storage = Self {
             state: Arc::new(RwLock::new(Arc::new(state))),
@@ -434,7 +463,7 @@ impl LsmStorageInner {
     }
 
     pub fn sync(&self) -> Result<()> {
-        unimplemented!()
+        self.state.read().memtable.sync_wal()
     }
 
     pub fn add_compaction_filter(&self, compaction_filter: CompactionFilter) {
@@ -587,7 +616,12 @@ impl LsmStorageInner {
     /// Force freeze the current memtable to an immutable memtable
     pub fn force_freeze_memtable(&self, _state_lock_observer: &MutexGuard<'_, ()>) -> Result<()> {
         let memtable_id = self.next_sst_id();
-        let memtable = MemTable::create(memtable_id);
+        let memtable = if self.options.enable_wal {
+            let wal_path = self.path_of_wal(memtable_id);
+            MemTable::create_with_wal(memtable_id, wal_path)?
+        } else {
+            MemTable::create(memtable_id)
+        };
 
         {
             let mut state = self.state.write();
@@ -621,7 +655,7 @@ impl LsmStorageInner {
         let mut builder = SsTableBuilder::new(self.options.block_size);
         mem_table.flush(&mut builder)?;
 
-        let id = self.next_sst_id();
+        let id = mem_table.id();
         let path = self.path_of_sst(id);
         let ss_table = builder.build(id, Some(self.block_cache.clone()), path)?;
 
