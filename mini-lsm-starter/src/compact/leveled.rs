@@ -192,11 +192,14 @@ impl LeveledCompactionController {
             )
             .cloned()
             .collect::<Vec<_>>();
-        lower_level.sort_by(|a, b| {
-            snapshot.sstables[a]
-                .first_key()
-                .cmp(snapshot.sstables[b].first_key())
-        });
+
+        if !in_recovery {
+            lower_level.sort_by(|a, b| {
+                snapshot.sstables[a]
+                    .first_key()
+                    .cmp(snapshot.sstables[b].first_key())
+            });
+        }
         snapshot.levels[task.lower_level - 1].1 = lower_level;
 
         (snapshot, files_to_delete)

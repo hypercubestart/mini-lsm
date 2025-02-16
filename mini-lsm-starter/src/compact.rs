@@ -285,7 +285,7 @@ impl LsmStorageInner {
         let new_sstables = self.compact(&compaction_task)?;
         let new_l1_tables = Vec::from_iter(new_sstables.iter().map(|s| s.sst_id()));
         {
-            let _state_lock = self.state_lock.lock();
+            let state_lock = self.state_lock.lock();
             let mut new_state = self.state.read().as_ref().clone();
 
             new_state
@@ -299,6 +299,14 @@ impl LsmStorageInner {
             }
             new_state.levels[0].1.clone_from(&new_l1_tables);
             *self.state.write() = Arc::new(new_state);
+
+            self.sync_dir()?;
+            if let Some(manifest) = &self.manifest {
+                manifest.add_record(
+                    &state_lock,
+                    crate::manifest::ManifestRecord::Compaction(compaction_task, new_l1_tables),
+                )?;
+            }
         }
         for sst in l0_sstables.iter().chain(l1_sstables.iter()) {
             std::fs::remove_file(self.path_of_sst(*sst))?;
@@ -324,7 +332,7 @@ impl LsmStorageInner {
                 let output_ssts = output.iter().map(|x| x.sst_id()).collect::<Vec<_>>();
 
                 let files_to_delete = {
-                    let _state_lock = self.state_lock.lock();
+                    let state_lock = self.state_lock.lock();
                     let mut snapshot = self.state.read().as_ref().clone();
 
                     for sst_to_add in &output {
@@ -344,6 +352,14 @@ impl LsmStorageInner {
                     }
 
                     *self.state.write() = Arc::new(snapshot);
+
+                    self.sync_dir()?;
+                    if let Some(manifest) = &self.manifest {
+                        manifest.add_record(
+                            &state_lock,
+                            crate::manifest::ManifestRecord::Compaction(task, output_ssts),
+                        )?;
+                    }
 
                     files_to_delete
                 };
