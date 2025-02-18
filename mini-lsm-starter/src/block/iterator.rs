@@ -24,13 +24,20 @@ pub struct BlockIterator {
 }
 
 const SIZE_U16: usize = std::mem::size_of::<u16>();
+const SIZE_U64: usize = std::mem::size_of::<u64>();
 
 impl BlockIterator {
     fn new(block: Arc<Block>) -> Self {
         let first_key = {
             let first_key_length =
                 u16::from_be_bytes(block.data[0..SIZE_U16].try_into().unwrap()) as usize;
-            KeySlice::from_slice(&block.data[SIZE_U16..SIZE_U16 + first_key_length]).to_key_vec()
+            let key_slice = &block.data[SIZE_U16..SIZE_U16 + first_key_length];
+            let timestamp_slice =
+                &block.data[SIZE_U16 + first_key_length..SIZE_U16 + first_key_length + SIZE_U64];
+            let ts = u64::from_be_bytes(timestamp_slice.try_into().unwrap());
+
+            KeySlice::from_slice(&block.data[SIZE_U16..SIZE_U16 + first_key_length], ts)
+                .to_key_vec()
         };
 
         Self {
@@ -52,7 +59,10 @@ impl BlockIterator {
 
             let (key, key_end) = {
                 if idx == 0 {
-                    (self.first_key.clone(), SIZE_U16 + self.first_key.len())
+                    (
+                        self.first_key.clone(),
+                        SIZE_U16 + self.first_key.key_len() + SIZE_U64,
+                    )
                 } else {
                     let key_overlap_len = u16::from_be_bytes(
                         self.block.data[start..start + SIZE_U16].try_into().unwrap(),
@@ -66,13 +76,16 @@ impl BlockIterator {
                     ) as usize;
 
                     let suffix_key = &self.block.data[start_key..start_key + rest_key_len];
+                    let timestamp = &self.block.data
+                        [start_key + rest_key_len..start_key + rest_key_len + SIZE_U64];
+                    let ts: u64 = u64::from_be_bytes(timestamp.try_into().unwrap());
 
                     let mut key =
-                        KeySlice::from_slice(&self.first_key.raw_ref()[..key_overlap_len])
+                        KeySlice::from_slice(&self.first_key.key_ref()[..key_overlap_len], ts)
                             .to_key_vec();
                     key.append(suffix_key);
 
-                    (key, start_key + rest_key_len)
+                    (key, start_key + rest_key_len + SIZE_U64)
                 }
             };
 

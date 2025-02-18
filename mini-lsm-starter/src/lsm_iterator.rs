@@ -22,6 +22,7 @@ pub struct LsmIterator {
     inner: LsmIteratorInner,
     end_bound: Bound<Bytes>,
     is_valid: bool,
+    prev_key: Vec<u8>,
 }
 
 impl LsmIterator {
@@ -30,6 +31,7 @@ impl LsmIterator {
             is_valid: iter.is_valid(),
             inner: iter,
             end_bound,
+            prev_key: Vec::new(),
         };
 
         iter.move_to_non_delete()?;
@@ -38,16 +40,18 @@ impl LsmIterator {
     }
 
     fn next_inner(&mut self) -> Result<()> {
+        self.prev_key = self.key().to_vec();
         self.inner.next()?;
+
         if !self.inner.is_valid() {
             self.is_valid = false;
             return Ok(());
         }
 
         match self.end_bound.as_ref() {
-            Bound::Included(end_bound) => self.is_valid = self.inner.key().raw_ref() <= end_bound,
+            Bound::Included(end_bound) => self.is_valid = self.inner.key().key_ref() <= end_bound,
 
-            Bound::Excluded(end_bound) => self.is_valid = self.inner.key().raw_ref() < end_bound,
+            Bound::Excluded(end_bound) => self.is_valid = self.inner.key().key_ref() < end_bound,
 
             Bound::Unbounded => (),
         };
@@ -55,7 +59,7 @@ impl LsmIterator {
     }
 
     fn move_to_non_delete(&mut self) -> Result<()> {
-        while self.is_valid() && self.value().is_empty() {
+        while self.is_valid() && (self.value().is_empty() || self.key() == self.prev_key) {
             self.next_inner()?;
         }
 
@@ -71,7 +75,7 @@ impl StorageIterator for LsmIterator {
     }
 
     fn key(&self) -> &[u8] {
-        self.inner.key().raw_ref()
+        self.inner.key().key_ref()
     }
 
     fn value(&self) -> &[u8] {

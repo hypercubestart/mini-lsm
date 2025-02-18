@@ -18,8 +18,8 @@ use crate::{
 /// Builds an SSTable from key-value pairs.
 pub struct SsTableBuilder {
     builder: BlockBuilder,
-    first_key: Vec<u8>,
-    last_key: Vec<u8>,
+    first_key: KeyVec,
+    last_key: KeyVec,
     data: Vec<u8>,
     pub(crate) meta: Vec<BlockMeta>,
     key_hashes: Vec<u32>,
@@ -31,8 +31,8 @@ impl SsTableBuilder {
     pub fn new(block_size: usize) -> Self {
         Self {
             builder: BlockBuilder::new(block_size),
-            first_key: Vec::new(),
-            last_key: Vec::new(),
+            first_key: KeyVec::new(),
+            last_key: KeyVec::new(),
             data: Vec::new(),
             meta: Vec::new(),
             key_hashes: Vec::new(),
@@ -47,8 +47,8 @@ impl SsTableBuilder {
             let builder = std::mem::replace(&mut self.builder, BlockBuilder::new(self.block_size));
             self.meta.push(BlockMeta {
                 offset: self.data.len(),
-                first_key: KeyVec::from_vec(first_key).into_key_bytes(),
-                last_key: KeyVec::from_vec(last_key).into_key_bytes(),
+                first_key: first_key.into_key_bytes(),
+                last_key: last_key.into_key_bytes(),
             });
 
             self.data.extend(builder.build().encode());
@@ -60,7 +60,7 @@ impl SsTableBuilder {
         let added = self.builder.add(key, value);
 
         if added {
-            let keyvec = key.to_key_vec().into_inner();
+            let keyvec = key.to_key_vec();
             if self.first_key.is_empty() {
                 self.first_key = keyvec.clone();
             }
@@ -74,7 +74,7 @@ impl SsTableBuilder {
     /// Note: You should split a new block when the current block is full.(`std::mem::replace` may
     /// be helpful here)
     pub fn add(&mut self, key: KeySlice, value: &[u8]) {
-        self.key_hashes.push(fingerprint32(key.raw_ref()));
+        self.key_hashes.push(fingerprint32(key.key_ref()));
         let added = self._add(key, value);
         if !added {
             self.flush();

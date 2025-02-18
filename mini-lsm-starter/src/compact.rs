@@ -115,35 +115,37 @@ pub enum CompactionOptions {
 impl LsmStorageInner {
     fn generate_sst_from_iter(
         &self,
-        compact_to_bottom_level: bool,
+        _compact_to_bottom_level: bool,
         mut iter: impl for<'a> StorageIterator<KeyType<'a> = KeySlice<'a>>,
     ) -> Result<Vec<Arc<SsTable>>> {
         let mut builder = None;
         let mut new_sstables = Vec::new();
+        let mut last_key = Vec::new();
 
         while iter.is_valid() {
             if builder.is_none() {
                 builder = Some(SsTableBuilder::new(self.options.block_size));
             }
-            let key = iter.key();
-            let value = iter.value();
+
+            let same_as_last_key = iter.key().key_ref() == last_key;
+
             let b = builder.as_mut().unwrap();
-
-            if compact_to_bottom_level {
-                if !value.is_empty() {
-                    b.add(key, value);
-                }
-            } else {
-                b.add(key, value);
-            }
-
-            if b.estimated_size() >= self.options.target_sst_size {
+            if b.estimated_size() >= self.options.target_sst_size && !same_as_last_key {
                 let id = self.next_sst_id();
                 let path = self.path_of_sst(id);
                 let sstable = b.build(id, Some(self.block_cache.clone()), path)?;
                 new_sstables.push(Arc::new(sstable));
-                builder = None;
+                builder = Some(SsTableBuilder::new(self.options.block_size));
             }
+
+            let b = builder.as_mut().unwrap();
+            b.add(iter.key(), iter.value());
+
+            if !same_as_last_key {
+                last_key.clear();
+                last_key.extend_from_slice(iter.key().key_ref());
+            }
+
             iter.next()?;
         }
 

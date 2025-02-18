@@ -10,6 +10,8 @@ use bytes::{Buf, Bytes};
 use crossbeam_skiplist::SkipMap;
 use parking_lot::Mutex;
 
+use crate::key::{KeyBytes, KeySlice};
+
 pub struct Wal {
     file: Arc<Mutex<BufWriter<File>>>,
 }
@@ -27,7 +29,10 @@ impl Wal {
         })
     }
 
-    pub fn recover(path: impl AsRef<Path>, skiplist: &mut SkipMap<Bytes, Bytes>) -> Result<Self> {
+    pub fn recover(
+        path: impl AsRef<Path>,
+        skiplist: &mut SkipMap<KeyBytes, Bytes>,
+    ) -> Result<Self> {
         let mut file = OpenOptions::new()
             .read(true)
             .create_new(false)
@@ -40,8 +45,10 @@ impl Wal {
 
         while buf_ptr.has_remaining() {
             let key_len = buf_ptr.get_u64() as usize;
-            let key = Bytes::copy_from_slice(&buf_ptr[..key_len]);
+            let key_bytes = Bytes::copy_from_slice(&buf_ptr[..key_len]);
             buf_ptr.advance(key_len);
+            let ts = buf_ptr.get_u64();
+            let key = KeyBytes::from_bytes_with_ts(key_bytes, ts);
 
             let value_len = buf_ptr.get_u64() as usize;
             let value = Bytes::copy_from_slice(&buf_ptr[..value_len]);
@@ -55,11 +62,12 @@ impl Wal {
         })
     }
 
-    pub fn put(&self, key: &[u8], value: &[u8]) -> Result<()> {
+    pub fn put(&self, key: KeySlice, value: &[u8]) -> Result<()> {
         {
             let mut guard = self.file.lock();
-            guard.write_all(&(key.len() as u64).to_be_bytes())?;
-            guard.write_all(key)?;
+            guard.write_all(&(key.key_len() as u64).to_be_bytes())?;
+            guard.write_all(key.key_ref())?;
+            guard.write_all(&key.ts().to_be_bytes())?;
             guard.write_all(&(value.len() as u64).to_be_bytes())?;
             guard.write_all(value)?;
         }
